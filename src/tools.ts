@@ -14,7 +14,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     "create_project",
     "Create a new project to organize tasks and track time",
     {
-      name: z.string().describe("Unique project name"),
+      name: z.string().min(1).describe("Unique project name"),
       description: z.string().optional().describe("What this project is about"),
     },
     async ({ name, description }) => {
@@ -77,7 +77,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     "Create a new task within a project. Optionally assign priority, due date, and tags.",
     {
       project_id: z.number().describe("Parent project ID"),
-      title: z.string().describe("Task title"),
+      title: z.string().min(1).describe("Task title"),
       description: z.string().optional().describe("Detailed task description"),
       priority: z
         .enum(["low", "medium", "high", "urgent"])
@@ -85,6 +85,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .describe("Priority level (default: medium)"),
       due_date: z
         .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format")
         .optional()
         .describe("Due date in YYYY-MM-DD format"),
       tags: z
@@ -133,6 +134,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .describe("New priority"),
       due_date: z
         .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format")
         .optional()
         .describe("New due date (YYYY-MM-DD) or empty string to clear"),
     },
@@ -242,10 +244,12 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
       project_id: z.number().describe("Project ID"),
       from: z
         .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format")
         .optional()
         .describe("Start date filter (YYYY-MM-DD)"),
       to: z
         .string()
+        .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format")
         .optional()
         .describe("End date filter (YYYY-MM-DD)"),
     },

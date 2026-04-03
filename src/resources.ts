@@ -32,6 +32,7 @@ export function registerResources(server: McpServer, db: TaskflowDB): void {
     }),
     async (uri, variables) => {
       const id = parseInt(variables.projectId as string, 10);
+      if (isNaN(id)) return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Invalid ID" }] };
       const data = db.exportProject(id);
       return {
         contents: [
@@ -53,6 +54,7 @@ export function registerResources(server: McpServer, db: TaskflowDB): void {
     }),
     async (uri, variables) => {
       const id = parseInt(variables.taskId as string, 10);
+      if (isNaN(id)) return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Invalid ID" }] };
       const task = db.getTaskWithDetails(id);
       if (!task) {
         return {

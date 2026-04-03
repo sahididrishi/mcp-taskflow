@@ -24,6 +24,16 @@ async function main() {
   console.error("mcp-taskflow server running on stdio");
 }
 
+process.on("SIGINT", () => {
+  db.close();
+  process.exit(0);
+});
+
+process.on("SIGTERM", () => {
+  db.close();
+  process.exit(0);
+});
+
 main().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);

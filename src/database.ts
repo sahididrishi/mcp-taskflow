@@ -139,10 +139,12 @@ export class TaskflowDB {
 
     for (const migration of MIGRATIONS) {
       if (!applied.has(migration.version)) {
-        this.db.exec(migration.up);
-        this.db
-          .prepare("INSERT INTO schema_version (version) VALUES (?)")
-          .run(migration.version);
+        this.db.transaction(() => {
+          this.db.exec(migration.up);
+          this.db
+            .prepare("INSERT INTO schema_version (version) VALUES (?)")
+            .run(migration.version);
+        })();
       }
     }
   }
@@ -184,7 +186,7 @@ export class TaskflowDB {
     const fields: string[] = [];
     const values: any[] = [];
 
-    if (updates.name) {
+    if (updates.name !== undefined) {
       fields.push("name = ?");
       values.push(updates.name);
     }
@@ -192,7 +194,7 @@ export class TaskflowDB {
       fields.push("description = ?");
       values.push(updates.description);
     }
-    if (updates.status) {
+    if (updates.status !== undefined) {
       fields.push("status = ?");
       values.push(updates.status);
     }
@@ -326,7 +328,7 @@ export class TaskflowDB {
     const fields: string[] = [];
     const values: any[] = [];
 
-    if (updates.title) {
+    if (updates.title !== undefined) {
       fields.push("title = ?");
       values.push(updates.title);
     }
@@ -334,7 +336,7 @@ export class TaskflowDB {
       fields.push("description = ?");
       values.push(updates.description);
     }
-    if (updates.status) {
+    if (updates.status !== undefined) {
       fields.push("status = ?");
       values.push(updates.status);
       // Auto-set completed_at when marking done
@@ -344,7 +346,7 @@ export class TaskflowDB {
         fields.push("completed_at = NULL");
       }
     }
-    if (updates.priority) {
+    if (updates.priority !== undefined) {
       fields.push("priority = ?");
       values.push(updates.priority);
     }
@@ -400,6 +402,7 @@ export class TaskflowDB {
   }
 
   tagTask(taskId: number, tagName: string, color?: string): void {
+    if (!this.getTask(taskId)) throw new Error(`Task with id ${taskId} not found`);
     const tag = this.createTag(tagName, color);
     this.db
       .prepare("INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)")
@@ -508,6 +511,9 @@ export class TaskflowDB {
     content: string,
     opts?: { project_id?: number; task_id?: number }
   ): Note {
+    if (!opts?.project_id && !opts?.task_id) {
+      throw new Error('Note must be attached to a project or task');
+    }
     if (opts?.project_id && !this.getProject(opts.project_id)) {
       throw new Error(`Project with id ${opts.project_id} not found`);
     }
@@ -539,9 +545,9 @@ export class TaskflowDB {
     if (opts?.project_id) {
       return this.db
         .prepare(
-          "SELECT * FROM notes WHERE project_id = ? ORDER BY created_at DESC"
+          "SELECT * FROM notes WHERE project_id = ? OR task_id IN (SELECT id FROM tasks WHERE project_id = ?) ORDER BY created_at DESC"
         )
-        .all(opts.project_id) as Note[];
+        .all(opts.project_id, opts.project_id) as Note[];
     }
     return this.db
       .prepare("SELECT * FROM notes ORDER BY created_at DESC LIMIT 50")
@@ -556,7 +562,8 @@ export class TaskflowDB {
   // ── Search ──────────────────────────────────────────────
 
   search(query: string, scope?: "projects" | "tasks" | "notes"): SearchResult[] {
-    const pattern = `%${query}%`;
+    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const pattern = `%${escaped}%`;
     const results: SearchResult[] = [];
 
     if (!scope || scope === "projects") {
@@ -564,7 +571,7 @@ export class TaskflowDB {
         .prepare(
           `SELECT id, name as title, COALESCE(description, '') as snippet
            FROM projects
-           WHERE name LIKE ? OR description LIKE ?
+           WHERE name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'
            ORDER BY updated_at DESC
            LIMIT 20`
         )
@@ -587,7 +594,7 @@ export class TaskflowDB {
           `SELECT t.id, t.title, COALESCE(t.description, '') as snippet, p.name as project_name
            FROM tasks t
            JOIN projects p ON p.id = t.project_id
-           WHERE t.title LIKE ? OR t.description LIKE ?
+           WHERE t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\'
            ORDER BY t.updated_at DESC
            LIMIT 30`
         )
@@ -611,7 +618,7 @@ export class TaskflowDB {
                   COALESCE(p.name, '') as project_name
            FROM notes n
            LEFT JOIN projects p ON p.id = n.project_id
-           WHERE n.content LIKE ?
+           WHERE n.content LIKE ? ESCAPE '\\'
            ORDER BY n.created_at DESC
            LIMIT 20`
         )
