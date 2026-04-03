@@ -33,16 +33,20 @@ export function registerResources(server: McpServer, db: TaskflowDB): void {
     async (uri, variables) => {
       const id = parseInt(variables.projectId as string, 10);
       if (isNaN(id)) return { contents: [{ uri: uri.href, mimeType: "text/plain", text: "Invalid ID" }] };
-      const data = db.exportProject(id);
-      return {
-        contents: [
-          {
-            uri: uri.href,
-            mimeType: "application/json",
-            text: JSON.stringify(data, null, 2),
-          },
-        ],
-      };
+      try {
+        const data = db.exportProject(id);
+        return {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: "application/json",
+              text: JSON.stringify(data, null, 2),
+            },
+          ],
+        };
+      } catch {
+        return { contents: [{ uri: uri.href, mimeType: "text/plain", text: `Project #${id} not found` }] };
+      }
     }
   );
 

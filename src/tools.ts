@@ -43,7 +43,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     "Update a project's name, description, or status",
     {
       id: z.number().describe("Project ID"),
-      name: z.string().optional().describe("New name"),
+      name: z.string().min(1).optional().describe("New name"),
       description: z.string().optional().describe("New description"),
       status: z
         .enum(["active", "paused", "completed", "archived"])
@@ -122,7 +122,7 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     "Update a task's title, description, status, priority, or due date. When status is set to 'done', completed_at is auto-recorded.",
     {
       id: z.number().describe("Task ID"),
-      title: z.string().optional().describe("New title"),
+      title: z.string().min(1).optional().describe("New title"),
       description: z.string().optional().describe("New description"),
       status: z
         .enum(["todo", "in_progress", "review", "done", "blocked"])
@@ -133,8 +133,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("New priority"),
       due_date: z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format")
+        .union([
+          z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format"),
+          z.literal(""),
+        ])
         .optional()
         .describe("New due date (YYYY-MM-DD) or empty string to clear"),
     },
