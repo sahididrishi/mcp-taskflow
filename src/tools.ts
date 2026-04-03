@@ -1,11 +1,29 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { TaskflowDB } from "./database.js";
+import { toolLog } from "./logger.js";
 
 const TEXT = "text" as const;
 const json = (data: any) => JSON.stringify(data, null, 2);
 const ok = (data: any) => ({ content: [{ type: TEXT, text: json(data) }] });
 const err = (msg: string) => ({ content: [{ type: TEXT, text: msg }], isError: true as const });
+
+function withLogging(
+  toolName: string,
+  handler: (args: any) => Promise<any>
+): (args: any) => Promise<any> {
+  return async (args) => {
+    const start = performance.now();
+    try {
+      const result = await handler(args);
+      toolLog(toolName, args, Math.round(performance.now() - start), true);
+      return result;
+    } catch (e: any) {
+      toolLog(toolName, args, Math.round(performance.now() - start), false, e.message);
+      return err(`Failed: ${e.message}`);
+    }
+  };
+}
 
 export function registerTools(server: McpServer, db: TaskflowDB): void {
   // ── Projects ──────────────────────────────────────────
@@ -17,13 +35,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
       name: z.string().min(1).describe("Unique project name"),
       description: z.string().optional().describe("What this project is about"),
     },
-    async ({ name, description }) => {
-      try {
-        return ok(db.createProject(name, description));
-      } catch (e: any) {
-        return err(`Failed to create project: ${e.message}`);
-      }
-    }
+    withLogging("create_project", async ({ name, description }) =>
+      ok(db.createProject(name, description))
+    )
   );
 
   server.tool(
@@ -35,7 +49,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("Filter by status"),
     },
-    async ({ status }) => ok(db.listProjects(status))
+    withLogging("list_projects", async ({ status }) =>
+      ok(db.listProjects(status))
+    )
   );
 
   server.tool(
@@ -50,10 +66,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("New status"),
     },
-    async ({ id, ...updates }) => {
+    withLogging("update_project", async ({ id, ...updates }) => {
       const project = db.updateProject(id, updates);
       return project ? ok(project) : err(`Project #${id} not found`);
-    }
+    })
   );
 
   server.tool(
@@ -62,12 +78,12 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     {
       id: z.number().describe("Project ID to delete"),
     },
-    async ({ id }) => {
+    withLogging("delete_project", async ({ id }) => {
       const project = db.deleteProject(id);
       return project
         ? ok({ deleted: true, project })
         : err(`Project #${id} not found`);
-    }
+    })
   );
 
   // ── Tasks ─────────────────────────────────────────────
@@ -93,13 +109,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("Tags to apply (auto-created if new)"),
     },
-    async ({ project_id, title, ...opts }) => {
-      try {
-        return ok(db.createTask(project_id, title, opts));
-      } catch (e: any) {
-        return err(`Failed to create task: ${e.message}`);
-      }
-    }
+    withLogging("create_task", async ({ project_id, title, ...opts }) =>
+      ok(db.createTask(project_id, title, opts))
+    )
   );
 
   server.tool(
@@ -113,8 +125,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .describe("Filter by status"),
       tag: z.string().optional().describe("Filter by tag name"),
     },
-    async ({ project_id, status, tag }) =>
+    withLogging("list_tasks", async ({ project_id, status, tag }) =>
       ok(db.listTasks(project_id, { status, tag }))
+    )
   );
 
   server.tool(
@@ -140,10 +153,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("New due date (YYYY-MM-DD) or empty string to clear"),
     },
-    async ({ id, ...updates }) => {
+    withLogging("update_task", async ({ id, ...updates }) => {
       const task = db.updateTask(id, updates);
       return task ? ok(task) : err(`Task #${id} not found`);
-    }
+    })
   );
 
   server.tool(
@@ -152,10 +165,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     {
       id: z.number().describe("Task ID to delete"),
     },
-    async ({ id }) => {
+    withLogging("delete_task", async ({ id }) => {
       const task = db.deleteTask(id);
       return task ? ok({ deleted: true, task }) : err(`Task #${id} not found`);
-    }
+    })
   );
 
   // ── Tags ──────────────────────────────────────────────
@@ -171,14 +184,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("Hex color for new tags (e.g. '#FF5733')"),
     },
-    async ({ task_id, tag, color }) => {
-      try {
-        db.tagTask(task_id, tag, color);
-        return ok(db.getTaskWithDetails(task_id));
-      } catch (e: any) {
-        return err(`Failed to tag task: ${e.message}`);
-      }
-    }
+    withLogging("tag_task", async ({ task_id, tag, color }) => {
+      db.tagTask(task_id, tag, color);
+      return ok(db.getTaskWithDetails(task_id));
+    })
   );
 
   server.tool(
@@ -188,19 +197,21 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
       task_id: z.number().describe("Task ID"),
       tag: z.string().describe("Tag name to remove"),
     },
-    async ({ task_id, tag }) => {
+    withLogging("untag_task", async ({ task_id, tag }) => {
       const removed = db.untagTask(task_id, tag);
       return removed
         ? ok(db.getTaskWithDetails(task_id))
         : err(`Tag '${tag}' not found on task #${task_id}`);
-    }
+    })
   );
 
   server.tool(
     "list_tags",
     "List all tags with usage counts",
     {},
-    async () => ok(db.listAllTags())
+    withLogging("list_tags", async () =>
+      ok(db.listAllTags())
+    )
   );
 
   server.tool(
@@ -209,12 +220,12 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     {
       name: z.string().describe("Tag name to delete"),
     },
-    async ({ name }) => {
+    withLogging("delete_tag", async ({ name }) => {
       const deleted = db.deleteTag(name);
       return deleted
         ? ok({ deleted: true, tag: name })
         : err(`Tag '${name}' not found`);
-    }
+    })
   );
 
   // ── Time tracking ────────────────────────────────────
@@ -230,13 +241,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("What was done during this time"),
     },
-    async ({ task_id, minutes, description }) => {
-      try {
-        return ok(db.logTime(task_id, minutes, description));
-      } catch (e: any) {
-        return err(`Failed to log time: ${e.message}`);
-      }
-    }
+    withLogging("log_time", async ({ task_id, minutes, description }) =>
+      ok(db.logTime(task_id, minutes, description))
+    )
   );
 
   server.tool(
@@ -255,14 +262,10 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("End date filter (YYYY-MM-DD)"),
     },
-    async ({ project_id, from, to }) => {
-      try {
-        const range = from || to ? { from, to } : undefined;
-        return ok(db.getTimeReport(project_id, range));
-      } catch (e: any) {
-        return err(`Failed to generate report: ${e.message}`);
-      }
-    }
+    withLogging("time_report", async ({ project_id, from, to }) => {
+      const range = from || to ? { from, to } : undefined;
+      return ok(db.getTimeReport(project_id, range));
+    })
   );
 
   // ── Notes ─────────────────────────────────────────────
@@ -275,13 +278,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
       project_id: z.number().optional().describe("Attach to this project"),
       task_id: z.number().optional().describe("Attach to this task"),
     },
-    async ({ content, project_id, task_id }) => {
-      try {
-        return ok(db.addNote(content, { project_id, task_id }));
-      } catch (e: any) {
-        return err(`Failed to add note: ${e.message}`);
-      }
-    }
+    withLogging("add_note", async ({ content, project_id, task_id }) =>
+      ok(db.addNote(content, { project_id, task_id }))
+    )
   );
 
   server.tool(
@@ -291,7 +290,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
       project_id: z.number().optional().describe("Filter by project"),
       task_id: z.number().optional().describe("Filter by task"),
     },
-    async ({ project_id, task_id }) => ok(db.listNotes({ project_id, task_id }))
+    withLogging("list_notes", async ({ project_id, task_id }) =>
+      ok(db.listNotes({ project_id, task_id }))
+    )
   );
 
   server.tool(
@@ -300,12 +301,12 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     {
       id: z.number().describe("Note ID"),
     },
-    async ({ id }) => {
+    withLogging("delete_note", async ({ id }) => {
       const deleted = db.deleteNote(id);
       return deleted
         ? ok({ deleted: true, id })
         : err(`Note #${id} not found`);
-    }
+    })
   );
 
   // ── Search ────────────────────────────────────────────
@@ -320,14 +321,14 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
         .optional()
         .describe("Limit search to a specific type"),
     },
-    async ({ query, scope }) => {
+    withLogging("search", async ({ query, scope }) => {
       const results = db.search(query, scope);
       return ok({
         query,
         total: results.length,
         results,
       });
-    }
+    })
   );
 
   // ── Dashboard & Export ────────────────────────────────
@@ -336,7 +337,9 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     "dashboard",
     "Get a high-level overview: active projects, task stats, urgent/overdue items, recent completions, time logged today & this week, and tag distribution.",
     {},
-    async () => ok(db.getDashboard())
+    withLogging("dashboard", async () =>
+      ok(db.getDashboard())
+    )
   );
 
   server.tool(
@@ -345,12 +348,8 @@ export function registerTools(server: McpServer, db: TaskflowDB): void {
     {
       project_id: z.number().describe("Project ID to export"),
     },
-    async ({ project_id }) => {
-      try {
-        return ok(db.exportProject(project_id));
-      } catch (e: any) {
-        return err(`Failed to export: ${e.message}`);
-      }
-    }
+    withLogging("export_project", async ({ project_id }) =>
+      ok(db.exportProject(project_id))
+    )
   );
 }

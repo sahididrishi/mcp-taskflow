@@ -183,29 +183,8 @@ export class TaskflowDB {
     id: number,
     updates: { name?: string; description?: string; status?: string }
   ): Project | null {
-    const fields: string[] = [];
-    const values: any[] = [];
-
-    if (updates.name !== undefined) {
-      fields.push("name = ?");
-      values.push(updates.name);
-    }
-    if (updates.description !== undefined) {
-      fields.push("description = ?");
-      values.push(updates.description);
-    }
-    if (updates.status !== undefined) {
-      fields.push("status = ?");
-      values.push(updates.status);
-    }
-    if (fields.length === 0) return this.getProject(id);
-
-    fields.push("updated_at = datetime('now')");
-    values.push(id);
-
-    this.db
-      .prepare(`UPDATE projects SET ${fields.join(", ")} WHERE id = ?`)
-      .run(...values);
+    if (!this.getProject(id)) return null;
+    this.buildUpdate("projects", id, updates);
     return this.getProject(id);
   }
 
@@ -264,15 +243,20 @@ export class TaskflowDB {
     const task = this.db
       .prepare(
         `SELECT t.*, p.name as project_name,
-                COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes
+                COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes,
+                GROUP_CONCAT(DISTINCT tg.name) as tag_list
          FROM tasks t
          JOIN projects p ON p.id = t.project_id
-         WHERE t.id = ?`
+         LEFT JOIN task_tags tt ON tt.task_id = t.id
+         LEFT JOIN tags tg ON tg.id = tt.tag_id
+         WHERE t.id = ?
+         GROUP BY t.id`
       )
-      .get(id) as (TaskWithDetails & { tags?: any }) | undefined;
+      .get(id) as (TaskWithDetails & { tag_list?: string | null }) | undefined;
 
     if (!task) return null;
-    task.tags = this.getTaskTags(id);
+    task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
+    delete (task as any).tag_list;
     return task;
   }
 
@@ -282,9 +266,12 @@ export class TaskflowDB {
   ): TaskWithDetails[] {
     let query = `
       SELECT t.*, p.name as project_name,
-             COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes
+             COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes,
+             GROUP_CONCAT(DISTINCT tg.name) as tag_list
       FROM tasks t
       JOIN projects p ON p.id = t.project_id
+      LEFT JOIN task_tags tt ON tt.task_id = t.id
+      LEFT JOIN tags tg ON tg.id = tt.tag_id
       WHERE t.project_id = ?
     `;
     const params: any[] = [projectId];
@@ -296,18 +283,20 @@ export class TaskflowDB {
     if (opts?.tag) {
       query += `
         AND t.id IN (
-          SELECT tt.task_id FROM task_tags tt
-          JOIN tags tg ON tg.id = tt.tag_id
-          WHERE tg.name = ? COLLATE NOCASE
+          SELECT tt2.task_id FROM task_tags tt2
+          JOIN tags tg2 ON tg2.id = tt2.tag_id
+          WHERE tg2.name = ? COLLATE NOCASE
         )`;
       params.push(opts.tag);
     }
 
+    query += " GROUP BY t.id";
     query += " ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END, t.created_at DESC";
 
-    const tasks = this.db.prepare(query).all(...params) as TaskWithDetails[];
+    const tasks = this.db.prepare(query).all(...params) as Array<TaskWithDetails & { tag_list?: string | null }>;
     for (const task of tasks) {
-      task.tags = this.getTaskTags(task.id);
+      task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
+      delete (task as any).tag_list;
     }
     return tasks;
   }
@@ -325,44 +314,23 @@ export class TaskflowDB {
     const existing = this.getTask(id);
     if (!existing) return null;
 
-    const fields: string[] = [];
-    const values: any[] = [];
-
-    if (updates.title !== undefined) {
-      fields.push("title = ?");
-      values.push(updates.title);
-    }
-    if (updates.description !== undefined) {
-      fields.push("description = ?");
-      values.push(updates.description);
-    }
+    // Handle completed_at logic as extra SQL
+    const extraSql: string[] = [];
     if (updates.status !== undefined) {
-      fields.push("status = ?");
-      values.push(updates.status);
-      // Auto-set completed_at when marking done
       if (updates.status === "done" && existing.status !== "done") {
-        fields.push("completed_at = datetime('now')");
+        extraSql.push("completed_at = datetime('now')");
       } else if (updates.status !== "done" && existing.status === "done") {
-        fields.push("completed_at = NULL");
+        extraSql.push("completed_at = NULL");
       }
     }
-    if (updates.priority !== undefined) {
-      fields.push("priority = ?");
-      values.push(updates.priority);
-    }
-    if (updates.due_date !== undefined) {
-      fields.push("due_date = ?");
-      values.push(updates.due_date || null);
+
+    // Normalize due_date: empty string means clear
+    const normalizedUpdates = { ...updates };
+    if (normalizedUpdates.due_date !== undefined) {
+      normalizedUpdates.due_date = normalizedUpdates.due_date || (null as any);
     }
 
-    if (fields.length === 0) return this.getTaskWithDetails(id);
-
-    fields.push("updated_at = datetime('now')");
-    values.push(id);
-
-    this.db
-      .prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`)
-      .run(...values);
+    this.buildUpdate("tasks", id, normalizedUpdates, extraSql.length > 0 ? extraSql : undefined);
     return this.getTaskWithDetails(id);
   }
 
@@ -731,19 +699,56 @@ export class TaskflowDB {
 
   // ── Helpers ─────────────────────────────────────────────
 
+  private buildUpdate(
+    table: string,
+    id: number,
+    updates: Record<string, any>,
+    extraSql?: string[]
+  ): boolean {
+    const fields: string[] = [];
+    const values: any[] = [];
+
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        fields.push(`${key} = ?`);
+        values.push(value);
+      }
+    }
+
+    if (extraSql) fields.push(...extraSql);
+    if (fields.length === 0) return false;
+
+    fields.push("updated_at = datetime('now')");
+    values.push(id);
+
+    this.db.prepare(`UPDATE ${table} SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    return true;
+  }
+
   private fetchTasksWithDetails(whereClause: string): TaskWithDetails[] {
+    // Extract ORDER BY / LIMIT from whereClause so GROUP BY can go between
+    const orderMatch = whereClause.match(/(ORDER BY .*)$/i);
+    const orderClause = orderMatch ? orderMatch[1] : "";
+    const filterClause = orderMatch ? whereClause.slice(0, orderMatch.index).trim() : whereClause;
+
     const tasks = this.db
       .prepare(
         `SELECT t.*, p.name as project_name,
-                COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes
+                COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) as total_minutes,
+                GROUP_CONCAT(DISTINCT tg.name) as tag_list
          FROM tasks t
          JOIN projects p ON p.id = t.project_id
-         ${whereClause}`
+         LEFT JOIN task_tags tt ON tt.task_id = t.id
+         LEFT JOIN tags tg ON tg.id = tt.tag_id
+         ${filterClause}
+         GROUP BY t.id
+         ${orderClause}`
       )
-      .all() as TaskWithDetails[];
+      .all() as Array<TaskWithDetails & { tag_list?: string | null }>;
 
     for (const task of tasks) {
-      task.tags = this.getTaskTags(task.id);
+      task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
+      delete (task as any).tag_list;
     }
     return tasks;
   }
