@@ -4,8 +4,8 @@ import type { TaskflowDB } from "./database.js";
 import { toolLog } from "./logger.js";
 
 const TEXT = "text" as const;
-const json = (data: any) => JSON.stringify(data, null, 2);
-const ok = (data: any) => ({ content: [{ type: TEXT, text: json(data) }] });
+const json = (data: unknown) => JSON.stringify(data, null, 2);
+const ok = (data: unknown) => ({ content: [{ type: TEXT, text: json(data) }] });
 const err = (msg: string) => ({ content: [{ type: TEXT, text: msg }], isError: true as const });
 
 function withLogging(

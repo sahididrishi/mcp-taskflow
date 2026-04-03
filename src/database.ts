@@ -6,6 +6,7 @@ import type {
   Project,
   Task,
   TaskWithDetails,
+  TaskTimeBreakdown,
   TimeEntry,
   Note,
   Tag,
@@ -14,6 +15,7 @@ import type {
   SearchResult,
   ProjectExport,
 } from "./types.js";
+import { NotFoundError, ValidationError, ConflictError } from "./errors.js";
 
 // ── Schema migrations ───────────────────────────────────────
 // Each migration runs once, tracked by version number.
@@ -132,7 +134,7 @@ export class TaskflowDB {
     );
 
     const applied = new Set(
-      (this.db.prepare("SELECT version FROM schema_version").all() as any[]).map(
+      (this.db.prepare("SELECT version FROM schema_version").all() as Array<{ version: number }>).map(
         (r) => r.version
       )
     );
@@ -151,6 +153,7 @@ export class TaskflowDB {
 
   // ── Projects ────────────────────────────────────────────
 
+  /** Create a new project. Throws ConflictError if name already exists. */
   createProject(name: string, description?: string): Project {
     const stmt = this.db.prepare(
       "INSERT INTO projects (name, description) VALUES (?, ?)"
@@ -197,6 +200,7 @@ export class TaskflowDB {
 
   // ── Tasks ───────────────────────────────────────────────
 
+  /** Create a task in a project. Throws NotFoundError if project does not exist. */
   createTask(
     projectId: number,
     title: string,
@@ -208,7 +212,7 @@ export class TaskflowDB {
     }
   ): TaskWithDetails {
     const project = this.getProject(projectId);
-    if (!project) throw new Error(`Project with id ${projectId} not found`);
+    if (!project) throw new NotFoundError("Project", projectId);
 
     const stmt = this.db.prepare(
       `INSERT INTO tasks (project_id, title, description, priority, due_date)
@@ -256,7 +260,7 @@ export class TaskflowDB {
 
     if (!task) return null;
     task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
-    delete (task as any).tag_list;
+    delete task.tag_list;
     return task;
   }
 
@@ -274,7 +278,7 @@ export class TaskflowDB {
       LEFT JOIN tags tg ON tg.id = tt.tag_id
       WHERE t.project_id = ?
     `;
-    const params: any[] = [projectId];
+    const params: (string | number | null)[] = [projectId];
 
     if (opts?.status) {
       query += " AND t.status = ?";
@@ -296,11 +300,12 @@ export class TaskflowDB {
     const tasks = this.db.prepare(query).all(...params) as Array<TaskWithDetails & { tag_list?: string | null }>;
     for (const task of tasks) {
       task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
-      delete (task as any).tag_list;
+      delete task.tag_list;
     }
     return tasks;
   }
 
+  /** Update task fields. Auto-manages completed_at when status changes to/from done. */
   updateTask(
     id: number,
     updates: {
@@ -325,9 +330,9 @@ export class TaskflowDB {
     }
 
     // Normalize due_date: empty string means clear
-    const normalizedUpdates = { ...updates };
+    const normalizedUpdates: Record<string, string | number | null | undefined> = { ...updates };
     if (normalizedUpdates.due_date !== undefined) {
-      normalizedUpdates.due_date = normalizedUpdates.due_date || (null as any);
+      normalizedUpdates.due_date = normalizedUpdates.due_date || null;
     }
 
     this.buildUpdate("tasks", id, normalizedUpdates, extraSql.length > 0 ? extraSql : undefined);
@@ -370,7 +375,7 @@ export class TaskflowDB {
   }
 
   tagTask(taskId: number, tagName: string, color?: string): void {
-    if (!this.getTask(taskId)) throw new Error(`Task with id ${taskId} not found`);
+    if (!this.getTask(taskId)) throw new NotFoundError("Task", taskId);
     const tag = this.createTag(tagName, color);
     this.db
       .prepare("INSERT OR IGNORE INTO task_tags (task_id, tag_id) VALUES (?, ?)")
@@ -410,9 +415,10 @@ export class TaskflowDB {
 
   // ── Time tracking ──────────────────────────────────────
 
+  /** Log minutes spent on a task. Throws NotFoundError if task does not exist. */
   logTime(taskId: number, minutes: number, description?: string): TimeEntry {
     const task = this.getTask(taskId);
-    if (!task) throw new Error(`Task with id ${taskId} not found`);
+    if (!task) throw new NotFoundError("Task", taskId);
 
     const stmt = this.db.prepare(
       "INSERT INTO time_entries (task_id, minutes, description) VALUES (?, ?, ?)"
@@ -423,15 +429,16 @@ export class TaskflowDB {
       .get(result.lastInsertRowid) as TimeEntry;
   }
 
+  /** Generate a per-task time breakdown for a project, optionally filtered by date range. */
   getTimeReport(
     projectId: number,
     dateRange?: { from?: string; to?: string }
   ): TimeReport {
     const project = this.getProject(projectId);
-    if (!project) throw new Error(`Project with id ${projectId} not found`);
+    if (!project) throw new NotFoundError("Project", projectId);
 
     let timeFilter = "";
-    const timeParams: any[] = [];
+    const timeParams: string[] = [];
 
     if (dateRange?.from) {
       timeFilter += " AND te.logged_at >= ?";
@@ -453,10 +460,10 @@ export class TaskflowDB {
          GROUP BY t.id
          ORDER BY total_minutes DESC`
       )
-      .all(...timeParams, projectId) as any[];
+      .all(...timeParams, projectId) as TaskTimeBreakdown[];
 
     const totalMinutes = tasks.reduce(
-      (sum: number, t: any) => sum + t.total_minutes,
+      (sum: number, t: TaskTimeBreakdown) => sum + t.total_minutes,
       0
     );
 
@@ -475,18 +482,19 @@ export class TaskflowDB {
 
   // ── Notes ───────────────────────────────────────────────
 
+  /** Add a note to a project or task. Throws ValidationError if neither is specified. */
   addNote(
     content: string,
     opts?: { project_id?: number; task_id?: number }
   ): Note {
     if (!opts?.project_id && !opts?.task_id) {
-      throw new Error('Note must be attached to a project or task');
+      throw new ValidationError("Note must be attached to a project or task");
     }
     if (opts?.project_id && !this.getProject(opts.project_id)) {
-      throw new Error(`Project with id ${opts.project_id} not found`);
+      throw new NotFoundError("Project", opts.project_id);
     }
     if (opts?.task_id && !this.getTask(opts.task_id)) {
-      throw new Error(`Task with id ${opts.task_id} not found`);
+      throw new NotFoundError("Task", opts.task_id);
     }
 
     const stmt = this.db.prepare(
@@ -529,6 +537,7 @@ export class TaskflowDB {
 
   // ── Search ──────────────────────────────────────────────
 
+  /** Full-text search across projects, tasks, and notes. Optionally limit to one scope. */
   search(query: string, scope?: "projects" | "tasks" | "notes"): SearchResult[] {
     const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
     const pattern = `%${escaped}%`;
@@ -543,7 +552,7 @@ export class TaskflowDB {
            ORDER BY updated_at DESC
            LIMIT 20`
         )
-        .all(pattern, pattern) as any[];
+        .all(pattern, pattern) as Array<{ id: number; title: string; snippet: string }>;
 
       for (const p of projects) {
         results.push({
@@ -566,7 +575,7 @@ export class TaskflowDB {
            ORDER BY t.updated_at DESC
            LIMIT 30`
         )
-        .all(pattern, pattern) as any[];
+        .all(pattern, pattern) as Array<{ id: number; title: string; snippet: string; project_name: string }>;
 
       for (const t of tasks) {
         results.push({
@@ -590,7 +599,7 @@ export class TaskflowDB {
            ORDER BY n.created_at DESC
            LIMIT 20`
         )
-        .all(pattern) as any[];
+        .all(pattern) as Array<{ id: number; snippet: string; project_name: string }>;
 
       for (const n of notes) {
         results.push({
@@ -608,6 +617,7 @@ export class TaskflowDB {
 
   // ── Dashboard ───────────────────────────────────────────
 
+  /** Return a high-level overview of active projects, task stats, and time logged. */
   getDashboard(): Dashboard {
     const projects = this.db
       .prepare(
@@ -680,9 +690,10 @@ export class TaskflowDB {
 
   // ── Export ──────────────────────────────────────────────
 
+  /** Export a complete project snapshot including tasks, notes, and time data. */
   exportProject(projectId: number): ProjectExport {
     const project = this.getProject(projectId);
-    if (!project) throw new Error(`Project with id ${projectId} not found`);
+    if (!project) throw new NotFoundError("Project", projectId);
 
     const tasks = this.listTasks(projectId);
     const notes = this.listNotes({ project_id: projectId });
@@ -702,11 +713,11 @@ export class TaskflowDB {
   private buildUpdate(
     table: string,
     id: number,
-    updates: Record<string, any>,
+    updates: Record<string, string | number | null | undefined>,
     extraSql?: string[]
   ): boolean {
     const fields: string[] = [];
-    const values: any[] = [];
+    const values: (string | number | null)[] = [];
 
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -748,7 +759,7 @@ export class TaskflowDB {
 
     for (const task of tasks) {
       task.tags = task.tag_list ? task.tag_list.split(",").sort() : [];
-      delete (task as any).tag_list;
+      delete task.tag_list;
     }
     return tasks;
   }

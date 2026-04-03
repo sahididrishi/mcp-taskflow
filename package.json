@@ -10,7 +10,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "tsx --test tests/database.test.ts"
+    "test": "tsx --test tests/database.test.ts tests/tools.test.ts"
   },
   "keywords": [
     "mcp",
