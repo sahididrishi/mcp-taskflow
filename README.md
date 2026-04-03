@@ -209,7 +209,7 @@ projects 1──* tasks 1──* time_entries
 | MCP SDK | `@modelcontextprotocol/sdk` — official Anthropic SDK |
 | Database | SQLite via `better-sqlite3` (WAL mode, foreign keys) |
 | Validation | Zod — runtime schema validation for all inputs |
-| Tests | Node.js built-in test runner (37 tests) |
+| Tests | Node.js built-in test runner (50 tests) |
 
 ## Project Structure
 
@@ -219,11 +219,14 @@ mcp-taskflow/
 │   ├── index.ts          # Entry point — wires everything together
 │   ├── types.ts          # TypeScript interfaces for all data models
 │   ├── database.ts       # TaskflowDB class with migrations and queries
-│   ├── tools.ts          # 20 MCP tool registrations
+│   ├── tools.ts          # 20 MCP tool registrations with structured logging
 │   ├── resources.ts      # MCP resource definitions
-│   └── prompts.ts        # MCP prompt templates
+│   ├── prompts.ts        # MCP prompt templates
+│   ├── logger.ts         # Structured JSON logging to stderr
+│   └── errors.ts         # Custom error hierarchy (NotFoundError, ValidationError)
 ├── tests/
-│   └── database.test.ts  # 37 tests covering all database operations
+│   ├── database.test.ts  # 37 tests covering all database operations
+│   └── tools.test.ts     # 13 tests for error hierarchy and tool integration
 ├── dist/                 # Compiled JavaScript (after npm run build)
 ├── package.json
 ├── tsconfig.json

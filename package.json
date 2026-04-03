@@ -20,7 +20,7 @@
     "project-management",
     "task-tracking"
   ],
-  "author": "",
+  "author": "Sahid Idrishi",
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {

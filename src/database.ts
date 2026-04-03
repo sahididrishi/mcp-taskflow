@@ -153,7 +153,7 @@ export class TaskflowDB {
 
   // ── Projects ────────────────────────────────────────────
 
-  /** Create a new project. Throws ConflictError if name already exists. */
+  /** Create a new project. Throws if name already exists (UNIQUE constraint). */
   createProject(name: string, description?: string): Project {
     const stmt = this.db.prepare(
       "INSERT INTO projects (name, description) VALUES (?, ?)"
